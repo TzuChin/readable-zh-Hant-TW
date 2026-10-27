@@ -1,0 +1,7 @@
+interface:
+  display_name: "好讀的繁體中文"
+  short_description: "用台灣慣用的繁體中文，先講結論、句子寫完整、不寫 AI 套話"
+  default_prompt: "Use $readable-zh-hant-tw to shape every response from now on: Traditional Chinese (Taiwan), answer first, restate state each turn."
+
+policy:
+  allow_implicit_invocation: true
