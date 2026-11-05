@@ -5,18 +5,19 @@
       也可以 import 後呼叫 check(text) -> dict
 
 分兩級：
-  hard  幾乎不會誤判，Stop hook 只看這一級：簡體字、破折號、中文旁邊的半形標點（, : ; ? !）、箭頭、「不是 X 而是 Y」（含並非、與其說…不如說）、
+  hard  幾乎不會誤判，只有 hard 會讓檢查失敗：簡體字、破折號、中文旁邊的半形標點（, : ; ? !）、中文和半形英數字之間沒空格、箭頭、「不是 X 而是 Y」（含並非、與其說…不如說）、
         中國用語、黑話、討好語、填充句、自己發明的口語（那一顆）、開頭兩句就在預告（以下是、下面是…）、
         「看不到…，下面是通用做法」這種前提接預告（出現在哪一句都算）、
-        第一句就在講自己的限制（我沒有 X 的存取權、看不到你的程式碼）
-  soft  只報告、不擋：空殼詞、AI 高頻詞、句子超過 40 字、一段超過 6 句、emoji、粗體過多、粗體標籤清單、
-        沒有出處的歸因、空泛結尾與誇大、段落中間的宣告句、出貨
+        第一句就在講自己的限制（我沒有 X 的存取權、看不到你的程式碼）、最後一段在提議幫忙（需要的話我可以…、有問題歡迎再問）
+  soft  只報告、不擋：空殼詞、AI 高頻詞、句子超過 40 字、一段超過 6 句、emoji、粗體過多、粗體標籤清單（連續三項時改算 hard）、
+        沒有出處的歸因、空泛結尾與誇大、段落中間的宣告句、出貨、最後一段可能在提議幫忙（要不要我、我可以幫你、我再幫你）
         （拿真實 transcript 量過，句長一類會擋下七成回合，誤判太多，只給人工或 eval 參考）
 
 不檢查：code fence、inline code、「」與“”裡的引文、> 開頭的引用、URL、路徑、markdown 表格列、標題。
 計字：中文一字算一；一段連續的英數字（含路徑、指令）算一。
 """
 import json
+import os
 import re
 import sys
 
@@ -34,8 +35,32 @@ SIMP = set(
 
 # 中國用語（繁體字形）
 PRC_HARD = ["視頻", "軟件", "信息", "默認", "兼容", "屏幕", "文件夾", "質量", "渠道",
-            "網絡", "內存", "硬盤", "打印", "鼠標", "服務器", "字節", "字符", "激活", "牛逼", "搞定了"]
-PRC_SOFT = ["優化", "數據", "智能", "調用", "代碼"]   # 「錯誤代碼」「事件代碼」在台灣是正常用法          # 台灣也有人用，只當 soft；「項目」在「子項目」裡是正常用法，不收
+            "網絡", "內存", "硬盤", "打印", "鼠標", "服務器", "字符", "激活", "牛逼", "搞定了",
+            "密鑰", "隊列", "緩存", "線程", "字符串", "數組", "端口", "存儲", "註銷", "中間件", "鏈接", "縮進",
+            "嵌套", "分佈式", "用戶名", "死機", "縮略圖", "界面"]
+PRC_SOFT = ["優化", "數據", "智能", "調用", "代碼",   # 「錯誤代碼」「事件代碼」在台灣是正常用法；「項目」在「子項目」裡是正常用法，不收
+            "字節", "文檔",   # 會誤抓「文字節點」「明文檔案」
+            "函數", "導出", "添加", "交互", "刷新", "源碼", "組件", "禁用", "重命名", "父進程", "文件名",
+            "擴展", "聲明", "運行", "批量", "截取", "性能", "溢出", "持久性", "默認值"]
+# OpenCC 的台灣詞彙表（TWPhrases.txt，Apache-2.0，授權在 TWPhrases.LICENSE）。上面兩份以外的詞：
+# 三個字以上算 hard，兩個字算 soft（兩個字容易跟前後文湊錯，例如「明顯卡頓」裡的「顯卡」）。
+# 2026-10 用 3,228 則台灣使用者自己寫的訊息量過：有人用過的詞放進 PRC_SKIP，不檢查。
+PRC_SKIP = set("保存 像素 優先級 全局 分區 前綴 參數 在線 外鍵 字體 對話框 導入 引導程序 拋出 接口 文件 映射 查找 查看 "
+               "權限 狀態欄 登錄 發佈 發送 算法 綁定 網卡 腳本 自行車 視圖 設備 設置 調度 連接 重裝 重載 鏡像 項目 類型 顯存 "
+               "點擊 實時 免提 顯卡 任務欄 算子 命名空間 窗口".split())
+PRC_TW = {}   # 中國用語 → 台灣用語，報告時附在後面
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "TWPhrases.txt"), encoding="utf-8") as _f:
+        for _line in _f:
+            _k, _, _v = _line.rstrip("\n").partition("\t")
+            if _v and not _line.startswith("#") and _k not in _v.split() and _k not in PRC_SKIP:
+                PRC_TW[_k] = _v.split()[0]
+except OSError:
+    pass
+PRC_TW["死機"] = "當機"   # OpenCC 給「宕機」，台灣一般說「當機」
+_listed = set(PRC_HARD) | set(PRC_SOFT)
+PRC_HARD += [k for k in PRC_TW if k not in _listed and len(k) >= 3]
+PRC_SOFT += [k for k in PRC_TW if k not in _listed and len(k) == 2]
 
 JARGON = ["賦能", "閉環", "抓手", "底層邏輯"]
 FLATTER = ["好問題", "希望這對你有幫助", "希望這對您有幫助", "如有其他問題", "歡迎隨時", "很高興能"]
@@ -51,26 +76,45 @@ CHINGLISH = re.compile(r"[\u4e00-\u9fff]\s*(?:sync|case|confirm|check|follow|sha
                        r"focus|schedule|plan)\s*(?:一下|[\u4e00-\u9fff])", re.I)
 VAGUE = ["專家認為", "業界普遍", "一般來說", "眾所周知", "研究顯示"]          # 沒有出處的歸因
 # 「我看不到你的程式碼，下面是通用做法」：前提接預告，出現在哪一句都算
-NO_DATA_ANNOUNCE = re.compile(r"(?:看不到|沒看到|讀不到|沒有看到|手上沒有|手邊沒有|工作目錄是空的)[^。\n]{0,40}?(?:下面|以下)(?:是|講|列出|整理)"
+NO_DATA_ANNOUNCE = re.compile(r"(?:看不到|沒看到|讀不到|沒有看到|找不到|沒找到|沒有找到|手上沒有|手邊沒有|工作目錄是空的)[^。\n]{0,40}?(?:下面|以下)(?:是|講|列出|整理|先)"
                               r"|(?:下面|以下)是通用")
 # 第一句就在講自己的限制（「我沒有 X 的存取權」「看不到你的程式碼」），答案被擠到後面：規則 1 要先給答案，限制放在後面
 LIMIT_FIRST = re.compile(r"^(?:(?:我這邊|我|這邊)[^。！？\n]{0,14}?(?:沒有|無法|沒辦法|不能)[^。！？\n]{0,16}?(?:存取|權限|讀取|讀到|連到|連線|看到|跑指令|執行指令)"
-                         r"|(?:我)?(?:看不到|讀不到|沒看到)(?:你的|你們的|這台|那台|你貼的))")
+                         r"|(?:我)?(?:看不到|讀不到|沒看到)(?:你的|你們的|這台|那台|你貼的)"
+                         # 「目前工作目錄裡沒有週報頁面的程式碼」「找不到相關程式碼」「這邊沒看到你們 staging 的設定檔」（2026-10 v27、v28 評分回覆）
+                         r"|(?:目前|這個|這邊|我這邊)?[^。！？\n]{0,8}?(?:工作目錄|環境|目錄|專案|資料夾)[^。！？\n]{0,10}?(?:沒有|找不到|沒找到|沒有找到|沒看到|沒有看到|看不到)"
+                         r"|(?:目前|這邊|我這邊)?(?:找不到|沒找到|沒有找到|沒看到|沒有看到)[^。！？\n]{0,16}?(?:程式碼|專案|檔案|設定檔|repo)"
+                         # 「我沒看到週報頁面的程式碼」「我沒有這台 server 的設定或監控資料」（v42；評分回覆量過：抓到 24、誤擋 0）
+                         r"|(?:我|我這邊)(?:沒有|找不到|沒找到|沒有找到|沒看到|沒有看到|看不到)[^。！？\n]{0,16}?(?:程式碼|專案|檔案|設定|資料|repo|log))")
 OPENING_ANNOUNCE = re.compile(r"(?:^|[。！？])\s*(以下是|以下為|以下整理|下面整理|下面是|下面列出|我來說明|我來解釋|接下來介紹|接下來說明)")
+# 第一句就用「如下」預告：「摘要如下：」「做法分別如下」。只看第一句，而且「如下」前面在 20 字以內：
+# 第一句先給答案、第二句才說「摘要如下」，或長句子句尾才接「如下」，評審都判通過（2026-10 用 873 則評分回覆量過）
+FIRST_AS_FOLLOWS = re.compile(r"如下(?:[：:，,]|\s*$)")
 ANNOUNCE = re.compile(r"(?:^|[。！？，：\n])\s*(以下是|以下為|以下整理|下面整理|下面是|下面列出|我來說明|我來解釋|接下來介紹|接下來說明)")
+# 最後一段在提議幫忙。2026-10 用 1,349 則評分回覆對照評審判定量過：
+# hard 這組抓到評審判失敗的 187 則裡的 12 則，誤擋 1 則；soft 這組多抓 39 則，但誤擋 50 則，
+# 誤擋的多半是「把結果貼給我，我再幫你判斷」這種具體下一步，或「要不要我順手改掉？」這種請使用者決定的問題
+OFFER_HARD = re.compile(r"需要的話[，,]?\s*我|如果(你)?(還)?(需要|想要?|有需要|有興趣)[^。\n]{0,40}(我(可以|再|能|來|就)|告訴我|跟我說)"
+                        r"|有(任何)?(其他)?(問題|疑問)(再|歡迎|隨時)|歡迎(隨時|再)|隨時(告訴|跟)我|再深入嗎|進一步[^。\n]{0,20}嗎[？?]"
+                        # 邀請再問：「想深入哪一塊…都可以再問」「直接問我」（1,620 則評分回覆裡抓到 3 則，誤擋 0 則）
+                        r"|都可以(再)?問|可以再問|再問我|直接問我|隨時問我")
+BOLD_LABEL_LIST = re.compile(r"(?:^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\*\*[^*\n]+\*\*[^。\n]*。?[ \t]*\n){3}", re.M)
+OFFER_SOFT = re.compile(r"要不要我|我可以(直接)?(再)?(幫你|替你|給你|協助)|我再(幫你|給你)")
 HOLLOW_END = ["未來可期", "奠定了堅實基礎", "奠定基礎", "重要的一步", "邁出了", "越來越好", "不懈追求", "標誌著"]     # 電商、物流的 repo 裡是正常用語，只報告
 
 CODE_FENCE = re.compile(r"```.*?```", re.S)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 QUOTED = re.compile(r"「[^」\n]*」|“[^”\n]*”")
 BLOCKQUOTE = re.compile(r"^[ \t]*>.*$", re.M)
-PATH = re.compile(r"(?:~|\.{1,2})?/[\w.@~+-]+(?:/[\w.@~+-]+)+|\b[\w.-]+\.(?:py|ts|tsx|js|jsx|md|json|ya?ml|toml|sh|go|rs|java|kt|swift|sql|html|css)(?::\d+)?\b")
+# 只認 ASCII：Python 的 \w 也會比對中文字，路徑後面緊接的中文會被一起吃掉
+PATH = re.compile(r"(?:~|\.{1,2})?/[A-Za-z0-9_.@~+-]+(?:/[A-Za-z0-9_.@~+-]+)+|(?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|jsx|md|json|ya?ml|toml|sh|go|rs|java|kt|swift|sql|html|css)(?::\d+)?(?![A-Za-z0-9_])")
 URL = re.compile(r"https?://\S+")
 HEADING_OR_TABLE = re.compile(r"^[ \t]*(#{1,6}\s.*|\|.*)$", re.M)
 LIST_MARK = re.compile(r"^[ \t]*(?:[-*+]\s+|\d+[.)]\s+)", re.M)
 BOLD = re.compile(r"\*\*[^*\n]+\*\*")
 EMOJI = re.compile(r"[\U0001F300-\U0001FAFF☀-➿⭐✅❌]")
 CJK = re.compile(r"[一-鿿]")
+NO_SPACE = re.compile(r"[一-鿿][A-Za-z0-9#@&+=$]|[A-Za-z0-9#@&+=$%][一-鿿]")
 
 
 def keep_lines(m):
@@ -125,6 +169,18 @@ def check(raw):
             for ln in lines_of(text, w):
                 pool.setdefault(w, []).append(ln)
 
+    # 中國用語：長的詞先比對，比對到的位置蓋掉，「字符串」就不會再算一次「字符」
+    prc_text, prc = text, {}
+    for w in sorted(set(PRC_HARD) | set(PRC_SOFT), key=len, reverse=True):
+        if w in prc_text:
+            prc[w] = lines_of(prc_text, w)
+            prc_text = prc_text.replace(w, "\u3000" * len(w))
+
+    def prc_hits(words, pool):
+        for w in words:
+            if w in prc:
+                pool[f"{w}（改{PRC_TW[w]}）" if w in PRC_TW else w] = prc[w]
+
     # hard
     simp = [(text.count("\n", 0, i) + 1, ch) for i, ch in enumerate(text) if ch in SIMP]
     if simp:
@@ -139,6 +195,11 @@ def check(raw):
                         for m in re.finditer(r"(?<=[\u4e00-\u9fff])[,:;?!]|[,:;?!](?=[\u4e00-\u9fff])", pool)})
     if halfwidth:
         hard["半形標點"] = halfwidth[:8]
+    # 中文和半形英數字、符號緊貼（「2天」「IG貼文」「`npm`安裝」）：要空一格。行內程式碼、路徑、網址在 clean() 裡換成 X，一樣算。
+    # 全形標點旁邊不用空。2026-10 量過評分回覆：1.5% 的回覆有這種寫法，抽看都是真的沒空格
+    nospace = [text.count("\n", 0, m.start()) + 1 for m in NO_SPACE.finditer(text)]
+    if nospace:
+        hard["中文和半形字之間沒空格"] = nospace[:8]
     # 選單路徑（Settings → CI/CD）與數字變化（165 → 5 秒、④→⑤）可以用：箭頭兩邊都不是中文字才放過
     arrows = [text.count("\n", 0, m.start()) + 1
               for m in re.finditer(r"(\S?)\s*→\s*(\S?)", text)
@@ -149,7 +210,7 @@ def check(raw):
           for m in re.finditer(r"(?:不(?:是|僅|僅僅|只|只是|單是)|並非|並不是)[^。\n]{1,30}?而是|與其說[^。\n]{1,30}?不如說", text)]
     if nx:
         hard["不是X而是Y"] = nx[:8]
-    yonghu = [text.count("\n", 0, m.start()) + 1 for m in re.finditer(r"用戶(?!端)", text)]
+    yonghu = [text.count("\n", 0, m.start()) + 1 for m in re.finditer(r"用戶(?![端名])", text)]
     if yonghu:
         hard.setdefault("中國用語", {})["用戶"] = yonghu
     # 開頭兩句就在預告「以下是…」「下面是…」：規則 1 的反例，回覆與文件都不該這樣開頭
@@ -157,20 +218,39 @@ def check(raw):
     if OPENING_ANNOUNCE.search(head) or "工作目錄是空的" in head:
         hard["開頭預告"] = [1]
     first = (sentences(LIST_MARK.sub("", text).strip().replace("\n", " ")) or [""])[0]
+    fa = FIRST_AS_FOLLOWS.search(first.strip())
+    if fa and sent_len(first.strip()[:fa.start()]) <= 20:   # 長句子裡先給了答案、句尾才接「如下」的不算
+        hard["開頭預告"] = [1]
     if LIMIT_FIRST.search(first.strip()):
         hard["開頭先講限制"] = [1]
     nda = [text.count("\n", 0, m.start()) + 1 for m in NO_DATA_ANNOUNCE.finditer(text)]
     if nda:
         hard["前提接預告"] = nda[:8]
-    for label, words in [("中國用語", PRC_HARD), ("黑話", JARGON), ("討好語", FLATTER), ("填充句", FILLER),
+    pool = hard.get("中國用語", {})
+    prc_hits(PRC_HARD, pool)
+    if pool:
+        hard["中國用語"] = pool
+    for label, words in [("黑話", JARGON), ("討好語", FLATTER), ("填充句", FILLER),
                          ("自己發明的口語", ODD_SLANG)]:
         pool = hard.get(label, {})
         hits(words, pool)
         if pool:
             hard[label] = pool
 
+    paras = [x for x in re.split(r"\n\s*\n", text.strip()) if x.strip()]
+    last = paras[-1] if paras else ""
+    last_line = text.strip().count("\n") - last.strip().count("\n") + 1
+    if OFFER_HARD.search(last):
+        hard["結尾提議幫忙（刪掉提議的那句）"] = [last_line]
+
     # soft
-    for label, words in [("空殼詞", HOLLOW), ("AI 高頻詞", AI_WORDS), ("口語（看情境）", ODD_SOFT), ("中國用語（可議）", PRC_SOFT),
+    if last and "結尾提議幫忙（刪掉提議的那句）" not in hard and OFFER_SOFT.search(last):
+        soft["結尾可能在提議幫忙"] = [last_line]
+    pool = {}
+    prc_hits(PRC_SOFT, pool)
+    if pool:
+        soft["中國用語（可議）"] = pool
+    for label, words in [("空殼詞", HOLLOW), ("AI 高頻詞", AI_WORDS), ("口語（看情境）", ODD_SOFT), 
                          ("沒有出處的歸因", VAGUE), ("空泛結尾與誇大", HOLLOW_END)]:
         pool = {}
         hits(words, pool)
@@ -194,6 +274,11 @@ def check(raw):
                   for m in re.finditer(r"^[ \t]*(?:[-*+]|\d+[.)])\s+\*\*[^*\n]{1,12}\*\*[^。\n]*。?[ \t]*$", text, re.M)]
     if len(label_list) >= 3:
         soft["粗體標籤清單"] = label_list[:8]
+    # 連續三項「**標籤**＋一句」：跟評分題目的 no-bold-label-list 同一條規則，hard
+    m = BOLD_LABEL_LIST.search(with_headings + "\n")
+    if m:
+        hard["粗體標籤清單"] = [with_headings.count("\n", 0, m.start()) + 1]
+        soft.pop("粗體標籤清單", None)
 
     long_sents, long_paras = [], []
     body = LIST_MARK.sub("", text)

@@ -17,3 +17,5 @@ These rules must not be used to diagnose, treat, or prove that anyone has ADHD o
 3. Wording: is it all Traditional Chinese, even if the surrounding context is in English? Any Simplified characters, dashes, arrows, half-width punctuation in Chinese sentences, 「不是 X 而是 Y」, Mainland Chinese usage, invented colloquialisms, or vague adjectives? Is the same thing called by two different names anywhere?
 4. Sentences: any sentence over 40 characters, or paragraph over 6 sentences? Any cause and effect split across two sentences, or sentences with an unclear subject?
 5. For anything described as 「repo 裡已經有」, was it actually read during this session? Was anything you could have finished yourself instead handed off to the user?
+
+If a hook reports 「風格檢查沒過」, rewrite only that reply, fixing just the named points.

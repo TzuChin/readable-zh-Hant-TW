@@ -5,12 +5,13 @@
   python3 install.py --status       看目前有沒有全域套用
   python3 install.py                全域套用（可加 --dry-run 只看會改什麼、--no-hooks 不裝 hook、--print 只印出組好的規則）
   python3 install.py --uninstall    移除全域套用，outputStyle 還原成套用前的值
+  python3 install.py --print-agents 印出給其他工具（AGENTS.md、GEMINI.md）的全域規則，內容跟 Claude Code 的全域套用一樣
 
 全域套用會做這些事（每一項都可以用 --uninstall 還原）：
   1. ~/.claude/output-styles/readable-zh-hant-tw.md   對話回覆的規則（output style）
   2. ~/.claude/readable-zh-hant-tw/core.md            共用的寫法規則，~/.claude/CLAUDE.md 用 @ 匯入。
                                                  subagent 和寫文件時也讀得到
-  3. ~/.claude/readable-zh-hant-tw/hooks/             Stop hook 檢查回覆、PostToolUse hook 檢查寫進檔案的中文文件
+  3. ~/.claude/readable-zh-hant-tw/hooks/             PostToolUse hook 檢查寫進檔案的中文文件
   4. ~/.claude/settings.json                     outputStyle、hooks、skillOverrides（全域套用後，
                                                  這個 skill 不再讓模型自己叫出來，免得規則重複）
 改動前的檔案備份在 ~/.claude/backups/readable-zh-hant-tw/<時間>/。
@@ -37,7 +38,7 @@ MANIFEST = BASE / "install.json"
 BLOCK_START, BLOCK_END = f"<!-- {NAME} -->", f"<!-- /{NAME} -->"
 CORE_REF = f"~/.claude/{NAME}/core.md" if CLAUDE == HOME / ".claude" else f"{CLAUDE}/{NAME}/core.md"
 IMPORT_BLOCK = f"{BLOCK_START}\n@{CORE_REF}\n{BLOCK_END}\n"
-HOOK_FILES = ("check_style.py", "stop_style_hook.py", "doc_check_hook.py")
+HOOK_FILES = ("check_style.py", "doc_check_hook.py", "TWPhrases.txt", "TWPhrases.LICENSE")
 OLD_NAME = "readable-zh-tw"   # 改名前的名稱，裝新版時連同它的全域套用一起移除
 LEGACY = (CLAUDE / "hooks" / NAME, CLAUDE / "skills" / f"{NAME}-doc",   # 舊版裝過的位置
           CLAUDE / OLD_NAME, CLAUDE / "output-styles" / f"{OLD_NAME}.md", CLAUDE / "hooks" / OLD_NAME,
@@ -139,6 +140,20 @@ def build_rules():
     return style.rstrip() + "\n", core.rstrip() + "\n"
 
 
+def build_agents_rules():
+    """給 Claude Code 以外的工具（AGENTS.md、GEMINI.md 這類一直生效的規則檔）用的全域規則。
+    內容跟 build_rules() 一樣，拿掉只有 Claude Code 才有的部分：output style 的 frontmatter 和開頭說明、
+    hook 的那句，校稿時跑檢查程式的路徑改回 skill 資料夾裡的相對路徑。"""
+    style, core = build_rules()
+    style = style[style.index("\n---\n", 4) + 5:].lstrip()
+    style = re.sub(r"^# Readable Taiwanese Chinese: conversation rules\n\n[^\n]*\n\n", "## Conversation rules\n\n", style)
+    style = re.sub(r"\n*If a hook reports 「風格檢查沒過」[^\n]*", "", style)
+    core = re.sub(r"^<!--.*?-->\n\n", "", core, flags=re.S)
+    core = re.sub(r"Run `python3 -I [^`]*check_style\.py <file>`",
+                  "If this skill's `scripts/check_style.py` is available, run `python3 -I <skill folder>/scripts/check_style.py <file>`", core)
+    return core.rstrip() + "\n\n" + style.rstrip() + "\n"
+
+
 def status():
     data = load_settings()
     style_on = data.get("outputStyle") == NAME and STYLE_DST.exists()
@@ -148,7 +163,6 @@ def status():
         "installed": style_on and md_on,
         "output_style": style_on,
         "claude_md_import": md_on,
-        "stop_hook": "stop_style_hook.py" in hooks,
         "doc_hook": "doc_check_hook.py" in hooks,
     }, ensure_ascii=False))
 
@@ -215,8 +229,6 @@ def install():
     strip_our_hooks(data)
     if "--no-hooks" not in sys.argv:
         hooks = data.setdefault("hooks", {})
-        hooks.setdefault("Stop", []).append({"hooks": [{
-            "type": "command", "command": f"python3 -I {BASE}/hooks/stop_style_hook.py", "timeout": 10}]})
         hooks.setdefault("PostToolUse", []).append({"matcher": "Write|Edit|MultiEdit|Bash", "hooks": [{
             "type": "command", "command": f"python3 -I {BASE}/hooks/doc_check_hook.py", "timeout": 10}]})
     data.setdefault("skillOverrides", {})[NAME] = "user-invocable-only"
@@ -276,7 +288,9 @@ def uninstall():
 
 
 if __name__ == "__main__":
-    if "--print" in sys.argv:
+    if "--print-agents" in sys.argv:
+        print(build_agents_rules(), end="")
+    elif "--print" in sys.argv:
         style, core = build_rules()
         print(style + "\n=====\n\n" + core)
     elif "--status" in sys.argv:
